@@ -1,6 +1,7 @@
 /vcpkg_installed
 /compile_flags.txt
 /todo.txt
-main.exe
+main_deb.exe
+main_rel.exe
 obj
 lib
