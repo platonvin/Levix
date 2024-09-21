@@ -2,12 +2,18 @@
 #include <iostream>
 #include <glm/glm.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <functional>
 #include <cmath>
+#include <set>
+#include <raylib.h>
+
+std::vector<glm::vec2> collisions;
 
 // #define pl(x) std::cout << ":" << __LINE__ << " " << __FUNCTION__ << "() " #x " " << x << "\n";
 #define pl(x) 
+#define apl(x) std::cout << ":" << __LINE__ << " " << __FUNCTION__ << "() " #x " " << x << "\n";
 
 template<typename Type> bool noneEqual(const std::pair<Type&, Type&>& pair1, const std::pair<Type&, Type&>& pair2) {
     return !(pair1.first  == pair2.first || pair1.first  == pair2.second || 
@@ -34,6 +40,7 @@ using namespace glm;
 using std::vector;
 // Do you really need more than that?
 enum class ShapeType { 
+    None, 
     Point, 
     Circle, 
     Square 
@@ -43,7 +50,7 @@ struct Entity {
     int id;
     vec2 position = vec2(0);
     vec2 velocity = vec2(0);
-    ShapeType shape; //TODO union
+    ShapeType shape = ShapeType::None; //TODO union
         float radius = 0;
         float width = 0;
         float height = 0;
@@ -58,18 +65,18 @@ struct Entity {
         // pl((velocity * deltaTime).x)
         // pl((velocity * deltaTime).y)
         // pl(length(velocity * deltaTime))
-        return radius + length(velocity * deltaTime); //TODO
+        return (radius + length(velocity * deltaTime))*2.f; //TODO
     }
 };
 
 struct CollisionEvent {
-    Entity* entity1;
-    Entity* entity2;
-    float timeUntilCollision;
+    Entity* entity1 = nullptr;
+    Entity* entity2 = nullptr;
+    float timeUntilCollision = NAN;
 };
 
 struct SpatialCell {
-    Entity* head;
+    Entity* head = nullptr;
 };
 
 static long int collisionCounter = 0;
@@ -88,7 +95,7 @@ public:
     void destroy() {}
 
     int getCellIndex(vec2 position) {
-        pl(cellSize)
+        // pl(cellSize)
         ivec2 xy = clamp(ivec2(position / vec2(cellSize)), ivec2(0), gridSize-1);
         return xy.x + xy.y * gridSize.x;
     }
@@ -146,13 +153,13 @@ public:
         int currentWidth = baseGridWidth;
         int currentHeight = baseGridHeight;
         float currentCellSize = _baseCellSize;
-        
+        apl(mipLevels)
         for(int mip=0; mip<mipLevels; mip++){
             grids.push_back({});
             grids[mip].create(currentWidth, currentHeight, currentCellSize);
             currentWidth /= 2;
             currentHeight /= 2;
-            currentCellSize /= 2;
+            currentCellSize *= 2;
             pl(mip)
             pl(currentWidth)
             pl(currentHeight)
@@ -164,13 +171,17 @@ public:
     int getMipLevel(float characteristicSize) {
         float ratio = characteristicSize / baseCellSize;
         int mipmap = clamp(int(glm::log2(ratio)),0, mipLevels-1);
-        // return mipmap;
-        return mipLevels-1;
+        return mipmap;
+        // return mipLevels-1;
     }
 
     // newCharSize should probably be ~ size + sqrt(dist moved on desired tick)
     void insertEntity(Entity* entity, float newCharSize) {
         int mip = getMipLevel(newCharSize); //TODO
+        if(mip != 0) pl(entity->radius)
+        if(mip != 0) pl(length(entity->velocity))
+        // assert(mip == 0);
+        
         pl(mip)
         assert(entity);
         entity->mip_stored = mip;
@@ -207,6 +218,23 @@ public:
     void destroy() {}
 };
 
+struct pair_hash {
+    template <typename T1, typename T2>
+    std::size_t operator()(const std::pair<T1, T2>& pair) const {
+        auto hash1 = std::hash<T1>{}(pair.first);
+        auto hash2 = std::hash<T2>{}(pair.second);
+        // Combine two hashes symmetrically
+        return hash1 + hash2;
+    }
+};
+
+struct pair_equal {
+    bool operator()(const std::pair<Entity*, Entity*>& lhs, const std::pair<Entity*, Entity*>& rhs) const {
+        return ((lhs.first == rhs.first)  && (lhs.second == rhs.second)) || 
+               ((lhs.first == rhs.second) && (lhs.second == rhs.first));
+    }
+};
+
 struct ECS {
     std::unordered_map<int, Entity*> entities;
     //NEVER interract with entities in partitioning directly. This will lead to either crash, INF loop or memory leak
@@ -238,32 +266,42 @@ pl(__LINE__)
 
     void processSimulation(float deltaTime) {
         float usedTime = 0.0f;
-
+        std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal> already_processed_ents = {};
+        
         // Continue finding and processing collisions until we've exhausted the delta time
         // this is like general physics engine approach but precise and painfully slow
         while (usedTime < deltaTime) {
             // pl("START ITER")
-            CollisionEvent nextCollision;
-            bool collides = findNextCollision(deltaTime - usedTime, &nextCollision);
-            if(collides){
-                // pl(nextCollision.timeUntilCollision)
+            CollisionEvent nextCollision = {0};
+            bool collides_someday = findNextCollision(deltaTime - usedTime, &nextCollision, already_processed_ents);
+            bool collides_this_tick = (collides_someday) && (nextCollision.timeUntilCollision < (deltaTime - usedTime));
+                pl(deltaTime)
+                pl(usedTime)
+                pl(collides_someday)
+                pl(collides_this_tick)
+                pl(nextCollision.timeUntilCollision)
 
+            if(collides_this_tick){
                 // Move all entities by the time until the next collision
-                float collisionTime = nextCollision.timeUntilCollision;
-                moveEntitiesByTime(collisionTime);
+                float collisionTime = min(nextCollision.timeUntilCollision, deltaTime-usedTime);
+                pl(collisionTime)
 
+                if(collisionTime > 0){
+                    moveEntitiesByTime(collisionTime);
+                    usedTime += collisionTime;
+                }
                 // pl("AHTUNG COLLISION HAPPENED")
                 // printEntityPositions();
                 // pl("\n")
 
                 // Handle the next collision
-                if (nextCollision.entity1 && nextCollision.entity2) {
-                    // handleCollision(*nextCollision.entity1, *nextCollision.entity2);
-                        vec2 delta = nextCollision.entity2->position - nextCollision.entity1->position;
+                if (nextCollision.entity1 && nextCollision.entity2) { //TODO redundant
+                    vec2 delta = nextCollision.entity2->position - nextCollision.entity1->position;
                     resolveCollision(*nextCollision.entity1, *nextCollision.entity2, delta);
+                    vec2 v = (nextCollision.entity1->position + nextCollision.entity2->position)/2.f;
+                    collisions.push_back({v.x, v.y});
                 }
-                usedTime += collisionTime;
-            } {
+            } else {
                 moveEntitiesByTime(deltaTime - usedTime);
                 break;
             }
@@ -298,7 +336,7 @@ pl(__LINE__)
         if (entity2.onCollision) entity2.onCollision(entity2, entity1);
     }
 
-    bool findNextCollision(float remainingTime, CollisionEvent* event) {
+    bool findNextCollision(float remainingTime, CollisionEvent* event, std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal>& already_processed_ents) {
         *event = {0};
         float closest_collision_time = +INFINITY;
         bool any_collision_found = false;
@@ -309,44 +347,66 @@ pl(__LINE__)
             for (int xx = 0; xx < partitioning.grids[mip].gridSize.x; xx++) {
             for (int yy = 0; yy < partitioning.grids[mip].gridSize.y; yy++) {
                 ivec2 xxyy = ivec2(xx, yy);
-                ivec2 low  = clamp(xxyy - 1, ivec2(0), partitioning.grids[mip].gridSize - 1);
-                ivec2 high = clamp(xxyy + 1, ivec2(0), partitioning.grids[mip].gridSize - 1);
 
                 int idx = xxyy.x + xxyy.y * partitioning.grids[mip].gridSize.x;
                 Entity* entity = partitioning.grids[mip].cells[idx].head;
 
                 while (entity) {
-                    // Check every nearby cell
-                    for (int _x = low.x; _x <= high.x; _x++) {
-                    for (int _y = low.y; _y <= high.y; _y++) {
-                        int idx = _x + _y * partitioning.grids[mip].gridSize.x;
-                        Entity* other = partitioning.grids[mip].cells[idx].head;
+                    // Check every nearby cell in every bigger-cell mipmap
+                    for(int _mip=0; _mip<partitioning.mipLevels; _mip++){
+                        // Recalculated because different mip levels will have different id's for same point
+                        // Calculating it directly from xxyy leads to presicion and update delay problems
+                        // ivec2 low  = clamp((xxyy)/(1 << _mip)-1, ivec2(0), partitioning.grids[_mip].gridSize - 1);
+                        // ivec2 high = clamp((xxyy)/(1 << _mip)+1, ivec2(0), partitioning.grids[_mip].gridSize - 1);
 
-                        while (other) {
-                            // Calculate time until collision between entity and other
-                            //TODO move checks around
-                            if(other != entity){ //reduntant check
-                                // pl(entity)
-                                // pl(other)
-                                float timeUntilCollision;
-                                bool collides = calculateCollisionTime(*entity, *other, &timeUntilCollision);
-                                // pl(collides)
+                        vec2 center = entity->position;
+                        float cell_size = partitioning.grids[_mip].cellSize; 
+                        ivec2 low  = clamp(ivec2((center-cell_size) / cell_size), ivec2(0), partitioning.grids[_mip].gridSize - 1);
+                        ivec2 high = clamp(ivec2((center+cell_size) / cell_size), ivec2(0), partitioning.grids[_mip].gridSize - 1);
+                        
+                        // low = ivec2(0);
+                        // high = partitioning.grids[_mip].gridSize-1;
 
-                                if(collides){
-                                    any_collision_found = true;
-                                    // pl(timeUntilCollision);
-                                    if ((timeUntilCollision < closest_collision_time) and
-                                        noneEqual<Entity*>({entity, other}, {event->entity1, event->entity2})) {
-                                        closest_collision_time = timeUntilCollision;
-                                        *event = {entity, other, timeUntilCollision};
-                                        // pl(event->entity1)
-                                        // pl(event->entity2)
+                        for (int _x = low.x; _x <= high.x; _x++) {
+                        for (int _y = low.y; _y <= high.y; _y++) {
+                            int idx = _x + _y * partitioning.grids[_mip].gridSize.x;
+                            assert(_mip < partitioning.grids.size());
+                            Entity* other = partitioning.grids[_mip].cells[idx].head;
+                            pl("")
+                            pl(other)
+                            if(other) pl(other->id)
+
+                            while (other) {
+                                // Calculate time until collision between entity and other
+                                //TODO move checks around
+                                if(other != entity){ //reduntant check
+                                    // pl(entity)
+                                    // pl(other)
+                                    float timeUntilCollision;
+                                    pl(entity->id)
+                                    pl(other->id)
+                                    bool collides = calculateCollisionTime(*entity, *other, &timeUntilCollision);
+                                    // pl(collides)
+
+                                    if(collides){
+                                        pl("FOUND COLLISION")
+                                        pl(timeUntilCollision)
+                                        if ((timeUntilCollision < closest_collision_time)) {
+                                            if(! already_processed_ents.contains({entity, other})){
+                                                any_collision_found = true;
+                                        // pl(timeUntilCollision);
+                                                closest_collision_time = timeUntilCollision;
+                                                *event = {entity, other, timeUntilCollision};
+                                                pl(event->entity1)
+                                                pl(event->entity2)
+                                                already_processed_ents.insert({entity, other});
+                                            }
+                                        }
                                     }
                                 }
+                                other = other->next;
                             }
-                            other = other->next;
-                        }
-                    }
+                        }}
                     }
                     entity = entity->next;
                 }
@@ -363,6 +423,11 @@ pl(__LINE__)
     // Relative position and velocity
     vec2 p_rel = pos2 - pos1;
     vec2 v_rel = vel2 - vel1;
+
+    if(length(p_rel) <= radius1 + radius2) {
+        *timeUntilCollision = 0;
+        return true;
+    }
 
     // pl(p_rel.x)
     // pl(v_rel.x)
@@ -482,6 +547,11 @@ pl(__LINE__)
                 << ": Velocity (" << entity->velocity.x << ", " << entity->velocity.y << ")\n"
                 << ": mip " << entity->mip_stored << "\n"
                 << ": idx " << entity->idx_stored << "\n";
+        }
+    }
+
+    void printEntityProblems() {
+        for (const auto& [id, entity] : entities) {
         }
     }
 };
@@ -641,24 +711,82 @@ int main() {
     TEST(test_big_objects());
     std::cout << "Tests completed.\n";
     
-    int cells = 500;
-    ECS ecs; ecs.create(cells, cells, 6000.0f / cells);
+    const int screenWidth = 800;
+    const int screenHeight = 450;
+    InitWindow(screenWidth, screenHeight, "raylib [shapes] example - basic shapes drawing");
+    SetTargetFPS(60);
+    int cells = 200;
+    ECS ecs; ecs.create(cells, cells, 800.0f / cells);
 pl("\n")
-    int numEntities = 10000;
-    for (int i = 0; i < numEntities; ++i) {
-        float x = rand() % 5000;
-        float y = rand() % 5000;
-        float vx = (rand() % 200 - 100) / 100.0f;
-        float vy = (rand() % 200 - 100) / 100.0f;
-        float radius = (rand() % 50) / 10.0f + 1.0f;
-        float mass = (rand() % 50) / 10.0f + 1.0f;
-        ecs.insertEntity(i, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
+
+    for (int i = 0; i < 20; ++i) {
+        float x = screenWidth/2.f;
+        float y = (float(i)*screenHeight)/20;
+        float radius = 5.0f;
+        // float mass = (rand() % 50) / 10.0f + 1.0f;
+        float mass = 10000.0f;
+        ecs.insertEntity(i, vec2(x, y), vec2(0.01), ShapeType::Circle, radius, mass);
     }
+    srand(2);
+    int numEntities = 500;
+    for (int i = 0; i < numEntities; ++i) {
+        float x = rand() % screenWidth;
+        float y = rand() % screenHeight;
+        float vx = (rand() % 200 - 100) * 6.0f;
+        float vy = (rand() % 200 - 100) * 2.0f;
+        float radius = (rand() % 50) / 10.0f + 10.0f;
+        // float mass = (rand() % 50) / 10.0f + 1.0f;
+        float mass = radius*radius/100.f;
+        ecs.insertEntity(i+20, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
+    }
+        float x = 100;
+        float y = 100;
+        float vx = 50;
+        float vy = 0;
+        float radius = 50.0f;
+        // float mass = (rand() % 50) / 10.0f + 1.0f;
+        float mass = radius*radius/100.f;
+        ecs.insertEntity(777, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
+        // x = 401;
+        // vx = -50;
+        // ecs.insertEntity(2, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
+        // x = 600;
+        // vx = -80;
+        // ecs.insertEntity(3, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
 
+        // std::cout << "******\n\n";
+    ecs.printEntityFulls();
+    while (!WindowShouldClose()){
+        ClearBackground(RAYWHITE);
+        BeginDrawing();
+            for (const auto& [id, entity] : ecs.entities) {
+                DrawCircle(entity->position.x, entity->position.y, entity->radius, DARKBLUE);            
+                if(entity->position.x < 0 || entity->position.x > screenWidth) {
+                    entity->velocity.x *= -1;
+                }
+                if(entity->position.y < 0 || entity->position.y > screenHeight) {
+                    entity->velocity.y *= -1;
+                }
+            }
+            if(IsKeyDown(KEY_ENTER)){
+                collisions.clear();
+                if(IsKeyDown(KEY_RIGHT_SHIFT)){
+                    ecs.tick_simulation(-0.016);
+                } else {
+                    ecs.tick_simulation(0.016);
+                }
+                // ecs.printEntityFulls();
+            }
+            for (auto p : collisions){
+                DrawCircle(p.x, p.y, 3, GREEN);   
+            }
+            DrawFPS(10,10);
+        EndDrawing();
+    }
+    ecs.printEntityFulls();
+    // benchmark(ecs, 1);
         std::cout << "******\n\n";
-    benchmark(ecs, 1);
-        std::cout << "******\n\n";
-
+    CloseWindow(); 
     std::cout << "collision counter is " << collisionCounter << "\n";
 
     return 0;

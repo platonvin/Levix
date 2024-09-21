@@ -6,11 +6,12 @@ L =
 
 lib_objs := \
 
+REQUIRED_LIBS = -lraylib -lopengl32 -lgdi32 -lwinmm
 ifeq ($(OS),Windows_NT)
-	REQUIRED_LIBS =
+	REQUIRED_LIBS += 
 	STATIC_OR_DYNAMIC += -static
 else
-	REQUIRED_LIBS =
+	REQUIRED_LIBS +=
 endif
 	
 always_enabled_flags = -fno-exceptions -Wuninitialized -std=c++20
@@ -73,9 +74,9 @@ endif
 
 clean:
 ifeq ($(OS),Windows_NT)
-	del "obj\*.o" "lib\*.a" "examples\*.spv"
+	del "obj\*.o" "lib\*.a"
 else
-	rm -rf obj/*.o lib/*.a examples/*.spv
+	rm -rf obj/*.o lib/*.a
 endif
 
 .PHONY: vcpkg_installed_eval 
@@ -88,4 +89,12 @@ vcpkg_installed_eval: vcpkg_installed
 
 vcpkg_installed:
 	echo installind vcpkg dependencies. Please do not interrupt
+	vcpkg install
+
+update: clean
+	echo updating vcpkg dependencies. Please do not interrupt
+	vcpkg install
+	git submodule init
+	git submodule update
+	cd lum-al
 	vcpkg install
