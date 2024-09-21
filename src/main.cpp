@@ -551,7 +551,25 @@ pl(__LINE__)
     }
 
     void printEntityProblems() {
-        for (const auto& [id, entity] : entities) {
+        int empty = 0;
+        for(int mip=0; mip<partitioning.mipLevels; mip++){
+            for (int xx = 0; xx < partitioning.grids[mip].gridSize.x; xx++) {
+            for (int yy = 0; yy < partitioning.grids[mip].gridSize.y; yy++) {
+                ivec2 xxyy = ivec2(xx, yy);
+                int idx = xxyy.x + xxyy.y * partitioning.grids[mip].gridSize.x;
+                Entity* entity = partitioning.grids[mip].cells[idx].head;
+                int ctr = 0;
+                while (entity) {
+                    ctr++;
+                    entity = entity->next;
+                }
+                if (ctr != 0){
+                    std::cout << "ctr " << ctr << ": mip " << mip << "\n"
+                    << ": idx " << idx << "\n";;
+                }
+                else empty++;
+            }}
+            std::cout << "empty " << empty << ": mip " << mip << "\n";
         }
     }
 };
@@ -715,7 +733,7 @@ int main() {
     const int screenHeight = 450;
     InitWindow(screenWidth, screenHeight, "raylib [shapes] example - basic shapes drawing");
     SetTargetFPS(60);
-    int cells = 200;
+    int cells = 100;
     ECS ecs; ecs.create(cells, cells, 800.0f / cells);
 pl("\n")
 
@@ -755,20 +773,19 @@ pl("\n")
         // ecs.insertEntity(3, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
 
         // std::cout << "******\n\n";
-    ecs.printEntityFulls();
+    // ecs.printEntityFulls();
     while (!WindowShouldClose()){
         ClearBackground(RAYWHITE);
         BeginDrawing();
             for (const auto& [id, entity] : ecs.entities) {
                 DrawCircle(entity->position.x, entity->position.y, entity->radius, DARKBLUE);            
-                if(entity->position.x < 0 || entity->position.x > screenWidth) {
-                    entity->velocity.x *= -1;
-                }
-                if(entity->position.y < 0 || entity->position.y > screenHeight) {
-                    entity->velocity.y *= -1;
-                }
+                float d = 100.1;
+                if(entity->position.x < 0) {entity->velocity.x +=d;}
+                if(entity->position.x > screenWidth) {entity->velocity.x -=d;}
+                if(entity->position.y < 0) {entity->velocity.y +=d;}
+                if(entity->position.y > screenHeight) {entity->velocity.y -=d;}
             }
-            if(IsKeyDown(KEY_ENTER)){
+            // if(IsKeyDown(KEY_ENTER)){
                 collisions.clear();
                 if(IsKeyDown(KEY_RIGHT_SHIFT)){
                     ecs.tick_simulation(-0.016);
@@ -776,14 +793,15 @@ pl("\n")
                     ecs.tick_simulation(0.016);
                 }
                 // ecs.printEntityFulls();
-            }
+            // }
             for (auto p : collisions){
                 DrawCircle(p.x, p.y, 3, GREEN);   
             }
             DrawFPS(10,10);
         EndDrawing();
     }
-    ecs.printEntityFulls();
+    // ecs.printEntityFulls();
+    ecs.printEntityProblems();
     // benchmark(ecs, 1);
         std::cout << "******\n\n";
     CloseWindow(); 
