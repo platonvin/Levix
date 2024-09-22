@@ -5,3 +5,4 @@ main_deb.exe
 main_rel.exe
 obj
 lib
+/code.cpp

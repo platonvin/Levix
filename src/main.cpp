@@ -1,13 +1,20 @@
 #include <chrono>
 #include <iostream>
-#include <glm/glm.hpp>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <vector>
 #include <functional>
 #include <cmath>
-#include <set>
+#include <cassert>
+
+#include <glm/glm.hpp>
 #include <raylib.h>
+
+using namespace glm;
+using std::vector;
+using std::unordered_map;
+using std::unordered_set;
+// using std::unique_ptr;
 
 std::vector<glm::vec2> collisions;
 
@@ -36,8 +43,6 @@ bool aprox_equal(float x, float y, float eps = 0.0001f){
     std::cout << "leaving" #fun << "\n";\
 }while(0)
 
-using namespace glm;
-using std::vector;
 // Do you really need more than that?
 enum class ShapeType { 
     None, 
@@ -87,16 +92,14 @@ public:
     float cellSize;
     vector<SpatialCell> cells;
     
-    void create(int gridWidth, int gridHeight, float _cellSize){
+    void create(int gridWidth, int gridHeight, float _cellSize) {
         gridSize = ivec2(gridWidth, gridHeight);
         cellSize = _cellSize;
-        cells.resize(gridWidth*gridHeight);
+        cells.resize(gridWidth * gridHeight);
     }
-    void destroy() {}
 
-    int getCellIndex(vec2 position) {
-        // pl(cellSize)
-        ivec2 xy = clamp(ivec2(position / vec2(cellSize)), ivec2(0), gridSize-1);
+    int getCellIndex(const vec2& position) const {
+        ivec2 xy = clamp(ivec2(position / vec2(cellSize)), ivec2(0), gridSize - 1);
         return xy.x + xy.y * gridSize.x;
     }
 
@@ -178,8 +181,8 @@ public:
     // newCharSize should probably be ~ size + sqrt(dist moved on desired tick)
     void insertEntity(Entity* entity, float newCharSize) {
         int mip = getMipLevel(newCharSize); //TODO
-        if(mip != 0) pl(entity->radius)
-        if(mip != 0) pl(length(entity->velocity))
+        if(mip != 0) {pl(entity->radius)}
+        if(mip != 0) {pl(length(entity->velocity))}
         // assert(mip == 0);
         
         pl(mip)
@@ -264,7 +267,7 @@ pl(__LINE__)
         partitioning.moveEntity(entity, entity->getCharacteristicSize(dtime));
     }
 
-    void processSimulation(float deltaTime) {
+    void processSimulationPrecise(float deltaTime) {
         float usedTime = 0.0f;
         std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal> already_processed_ents = {};
         
@@ -273,7 +276,7 @@ pl(__LINE__)
         while (usedTime < deltaTime) {
             // pl("START ITER")
             CollisionEvent nextCollision = {0};
-            bool collides_someday = findNextCollision(deltaTime - usedTime, &nextCollision, already_processed_ents);
+            bool collides_someday = findNextCollisionWithAll(deltaTime - usedTime, &nextCollision, already_processed_ents);
             bool collides_this_tick = (collides_someday) && (nextCollision.timeUntilCollision < (deltaTime - usedTime));
                 pl(deltaTime)
                 pl(usedTime)
@@ -284,25 +287,24 @@ pl(__LINE__)
             if(collides_this_tick){
                 // Move all entities by the time until the next collision
                 float collisionTime = min(nextCollision.timeUntilCollision, deltaTime-usedTime);
-                pl(collisionTime)
 
                 if(collisionTime > 0){
-                    moveEntitiesByTime(collisionTime);
+                    moveAllEntitiesByTime(collisionTime);
                     usedTime += collisionTime;
                 }
-                // pl("AHTUNG COLLISION HAPPENED")
-                // printEntityPositions();
-                // pl("\n")
 
                 // Handle the next collision
                 if (nextCollision.entity1 && nextCollision.entity2) { //TODO redundant
                     vec2 delta = nextCollision.entity2->position - nextCollision.entity1->position;
                     resolveCollision(*nextCollision.entity1, *nextCollision.entity2, delta);
-                    vec2 v = (nextCollision.entity1->position + nextCollision.entity2->position)/2.f;
+                    vec2 v = (
+                        nextCollision.entity1->position * nextCollision.entity2->radius + 
+                        nextCollision.entity2->position * nextCollision.entity1->radius
+                        )/ (nextCollision.entity1->radius + nextCollision.entity2->radius);
                     collisions.push_back({v.x, v.y});
                 }
             } else {
-                moveEntitiesByTime(deltaTime - usedTime);
+                moveAllEntitiesByTime(deltaTime - usedTime);
                 break;
             }
 
@@ -311,7 +313,64 @@ pl(__LINE__)
         }
     }
 
-    void moveEntitiesByTime(float dTime) {
+    void processSimulationFast(float dTime) {
+        
+        std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal> already_processed_ents = {};
+        for(int mip=0; mip<partitioning.mipLevels; mip++){
+            for (int xx = 0; xx < partitioning.grids[mip].gridSize.x; xx++) {
+            for (int yy = 0; yy < partitioning.grids[mip].gridSize.y; yy++) {
+                int idx = xx + yy * partitioning.grids[mip].gridSize.x;
+                Entity* entity = partitioning.grids[mip].cells[idx].head;
+                // Continue finding and processing collisions until we've exhausted the delta time
+                // this is like general physics engine approach but precise and painfully slow
+                while(entity) {
+                    float usedTime = 0.0f;
+                    while (usedTime < dTime) {
+                        // pl("START ITER")
+                        CollisionEvent nextCollision = {0};
+                        bool collides_someday = findNextCollisionWithNearby(entity, &nextCollision, already_processed_ents);
+                        bool collides_this_tick = (collides_someday) && (nextCollision.timeUntilCollision < (dTime - usedTime));
+                            pl(deltaTime)
+                            pl(usedTime)
+                            pl(collides_someday)
+                            pl(collides_this_tick)
+                            pl(nextCollision.timeUntilCollision)
+
+                        if(collides_this_tick){
+                            // Move all entities by the time until the next collision
+                            float collisionTime = min(nextCollision.timeUntilCollision, dTime-usedTime);
+
+                            // if(collisionTime > 0){
+                                // moveAllEntitiesByTime(collisionTime);
+                                nextCollision.entity1->position += nextCollision.entity1->velocity * dTime;
+                                partitioning.moveEntity(nextCollision.entity1, nextCollision.entity1->getCharacteristicSize(dTime));
+                                
+                                nextCollision.entity2->position += nextCollision.entity2->velocity * dTime;
+                                partitioning.moveEntity(nextCollision.entity2, nextCollision.entity2->getCharacteristicSize(dTime));
+
+                                usedTime += collisionTime;
+
+                                // Handle the next collision
+                                if (nextCollision.entity1 && nextCollision.entity2) { //TODO redundant
+                                    vec2 delta = nextCollision.entity2->position - nextCollision.entity1->position;
+                                    resolveCollision(*nextCollision.entity1, *nextCollision.entity2, delta);
+                                    vec2 v = (nextCollision.entity1->position + nextCollision.entity2->position)/2.f;
+                                    collisions.push_back({v.x, v.y});
+                                }
+                            // }
+                        } else {
+                            entity->position += entity->velocity * (dTime - usedTime);
+                            partitioning.moveEntity(entity, entity->getCharacteristicSize(dTime - usedTime));
+                            break;
+                        }
+                    }
+                    entity = entity->next;
+                }
+            }}
+        }
+    }
+    
+    void moveAllEntitiesByTime(float dTime) {
         for (auto& [id, entity] : entities) {
             entity->position += entity->velocity * dTime;
             partitioning.moveEntity(entity, entity->getCharacteristicSize(dTime));
@@ -336,7 +395,7 @@ pl(__LINE__)
         if (entity2.onCollision) entity2.onCollision(entity2, entity1);
     }
 
-    bool findNextCollision(float remainingTime, CollisionEvent* event, std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal>& already_processed_ents) {
+    bool findNextCollisionWithAll(float remainingTime, CollisionEvent* event, std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal>& already_processed_ents) {
         *event = {0};
         float closest_collision_time = +INFINITY;
         bool any_collision_found = false;
@@ -417,6 +476,69 @@ pl(__LINE__)
         return any_collision_found;
     }
 
+    bool findNextCollisionWithNearby(Entity* target_entity, CollisionEvent* event, std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal>& already_processed_ents) {
+        *event = {0};
+        float closest_collision_time = +INFINITY;
+        bool any_collision_found = false;
+        
+        // Check every pair of nearby entities and calculate when they'll collide
+        // to find nearby ones, grab all the mip(map)s in 3x3 area. This IS slow.
+
+        // Check every nearby cell in every bigger-cell mipmap
+        for(int mip=0; mip<partitioning.mipLevels; mip++){
+            vec2 center = target_entity->position;
+            float cell_size = partitioning.grids[mip].cellSize; 
+            ivec2 low  = clamp(ivec2((center-cell_size) / cell_size), ivec2(0), partitioning.grids[mip].gridSize - 1);
+            ivec2 high = clamp(ivec2((center+cell_size) / cell_size), ivec2(0), partitioning.grids[mip].gridSize - 1);
+            
+            // low = ivec2(0);
+            // high = partitioning.grids[_mip].gridSize-1;
+
+            for (int _x = low.x; _x <= high.x; _x++) {
+            for (int _y = low.y; _y <= high.y; _y++) {
+                int idx = _x + _y * partitioning.grids[mip].gridSize.x;
+                assert(mip < partitioning.grids.size());
+                Entity* other = partitioning.grids[mip].cells[idx].head;
+                pl("")
+                pl(other)
+                if(other) pl(other->id)
+
+                while (other) {
+                    // Calculate time until collision between entity and other
+                    //TODO move checks around
+                    if(other != target_entity){ //reduntant check
+                        // pl(entity)
+                        // pl(other)
+                        float timeUntilCollision;
+                        pl(entity->id)
+                        pl(other->id)
+                        bool collides = calculateCollisionTime(*target_entity, *other, &timeUntilCollision);
+                        // pl(collides)
+
+                        if(collides){
+                            pl("FOUND COLLISION")
+                            pl(timeUntilCollision)
+                            if ((timeUntilCollision < closest_collision_time)) {
+                                if(! already_processed_ents.contains({target_entity, other})){
+                                    any_collision_found = true;
+                            // pl(timeUntilCollision);
+                                    closest_collision_time = timeUntilCollision;
+                                    *event = {target_entity, other, timeUntilCollision};
+                                    pl(event->entity1)
+                                    pl(event->entity2)
+                                    already_processed_ents.insert({target_entity, other});
+                                }
+                            }
+                        }
+                    }
+                    other = other->next;
+                }
+            }}
+        }
+        collisionCounter += any_collision_found;
+        return any_collision_found;
+    }
+    
     bool circleCircleIntersectionTime(vec2 pos1, vec2 vel1, float radius1, 
                                        vec2 pos2, vec2 vel2, float radius2,
                                        float* timeUntilCollision) {
@@ -514,7 +636,7 @@ pl(__LINE__)
     // }
 
     // Too big deltaTimes dramatically slow everything down
-    void tick_simulation(float deltaTime) {
+    void tick_simulation_precise(float deltaTime) {
         // This is neccessary due to how entities are processed. Instead of steps, everything is analytically solved. 
         // When entities are too fast, processing kernel will not notice it on current mip level, so we move it on mip level with bigger cells
         for (auto& [id, entity] : entities) {
@@ -526,7 +648,22 @@ pl(__LINE__)
             // if()
                            
         }
-        processSimulation(deltaTime);
+        processSimulationPrecise(deltaTime);
+    }
+
+    void tick_simulation_fast(float deltaTime) {
+        // This is neccessary due to how entities are processed. Instead of steps, everything is analytically solved. 
+        // When entities are too fast, processing kernel will not notice it on current mip level, so we move it on mip level with bigger cells
+        for (auto& [id, entity] : entities) {
+            // float max_step = length(entity->velocity * deltaTime);
+
+            // int old_mip = partitioning.getMipLevel();
+            // int old_mip = partitioning.getMipLevel(max_step);
+            partitioning.moveEntity(entity, entity->getCharacteristicSize(deltaTime));
+            // if()
+                           
+        }
+        processSimulationFast(deltaTime);
     }
 
     void printEntityPositions() {
@@ -578,7 +715,7 @@ void benchmark(ECS& ecs, int numIterations) {
     auto startTime = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < numIterations; ++i) {
-        ecs.tick_simulation(0.016f);
+        ecs.tick_simulation_precise(0.016f);
     }
 
     auto endTime = std::chrono::high_resolution_clock::now();
@@ -593,7 +730,7 @@ void test_no_collision_movement() {
     ECS ecs; ecs.create(10, 10, 50.0f);
 
     ecs.insertEntity(1, vec2(0.0f, 0.0f), vec2(1.0f, 0.0f), ShapeType::Circle, 5.0f, 1.0f);
-    ecs.tick_simulation(1.0f);  // Simulate 1 second of movement
+    ecs.tick_simulation_precise(1.0f);  // Simulate 1 second of movement
     // ecs.printEntityPositions();
 
     Entity* entity = ecs.entities[1];
@@ -606,7 +743,7 @@ void test_basic_collision() {
     ecs.insertEntity(1, vec2( 0.0000f, 0.0f), vec2(+1.0f, 0.0f), ShapeType::Circle, 1.0f, .001f);
     ecs.insertEntity(2, vec2(10.0001f, 0.0f), vec2(-1.0f, 0.0f), ShapeType::Circle, 1.0f, 10000000.0f);
 
-    ecs.tick_simulation(100000000.0);
+    ecs.tick_simulation_precise(100000000.0);
     
     // ecs.printEntityPositions();
 
@@ -627,7 +764,7 @@ void test_mass_impact_on_velocity() {
     ecs.insertEntity(1, vec2(0.0f, 0.0f), vec2(1.0f, 0.0f), ShapeType::Circle, 5.0f, 1.0f);
     ecs.insertEntity(2, vec2(10.0f, 0.0f), vec2(-1.0f, 0.0f), ShapeType::Circle, 5.0f, 10.0f);
 
-    ecs.tick_simulation(5.0f); // Simulate 5 seconds, expect a collision halfway
+    ecs.tick_simulation_precise(5.0f); // Simulate 5 seconds, expect a collision halfway
     // ecs.runCollisions();
     // ecs.printEntityPositions();
 
@@ -648,7 +785,7 @@ void test_circle_circle_collision_time() {
     ecs.insertEntity(1, vec2(0.0f, 0.0f), vec2(2.0f, 0.0f), ShapeType::Circle, 5.0f, 1.0f);
     ecs.insertEntity(2, vec2(20.0f, 0.0f), vec2(-2.0f, 0.0f), ShapeType::Circle, 5.0f, 1.0f);
 
-    ecs.tick_simulation(2.5f);
+    ecs.tick_simulation_precise(2.5f);
     // Expect the entities to collide after 2.5 seconds
     Entity* entity1 = ecs.entities[1];
     Entity* entity2 = ecs.entities[2];
@@ -664,7 +801,7 @@ void test_entity_removal() {
     ecs.insertEntity(1, vec2(0.0f, 0.0f), vec2(1.0f, 0.0f), ShapeType::Circle, 5.0f, 1.0f);
     ecs.insertEntity(2, vec2(10.0f, 0.0f), vec2(-1.0f, 0.0f), ShapeType::Circle, 5.0f, 1.0f);
 
-    ecs.tick_simulation(0.0f);  // Simulate no movement
+    ecs.tick_simulation_precise(0.0f);  // Simulate no movement
 
     ecs.partitioning.removeEntity(ecs.entities[1]);
     
@@ -679,7 +816,7 @@ void test_collision_resolution_accuracy() {
     ecs.insertEntity(1, vec2(100.0f, 0.0f), vec2(+2.0f, 0.0f), ShapeType::Circle, 0.01f, 1.0f);
     ecs.insertEntity(2, vec2(110.0f, 0.0f), vec2(-2.0f, 0.0f), ShapeType::Circle, 0.01f, 10.0f);
 
-    ecs.tick_simulation(5.0f);  // Simulate 5 seconds
+    ecs.tick_simulation_precise(5.0f);  // Simulate 5 seconds
 
     // ecs.printEntityVelocities();
     // ecs.printEntityPositions();
@@ -702,7 +839,7 @@ void test_big_objects() {
     ecs.insertEntity(2, vec2(110.0001f, 0.0f), vec2(-2.0f, 0.0f), ShapeType::Circle, 50.0f, 10.0f);
 
     ecs.printEntityFulls();
-    ecs.tick_simulation(5.0f);  // Simulate 5 seconds
+    ecs.tick_simulation_precise(5.0f);  // Simulate 5 seconds
 
     // ecs.printEntityVelocities();
     ecs.printEntityFulls();
@@ -746,13 +883,13 @@ pl("\n")
         ecs.insertEntity(i, vec2(x, y), vec2(0.01), ShapeType::Circle, radius, mass);
     }
     srand(2);
-    int numEntities = 500;
+    int numEntities = 5000;
     for (int i = 0; i < numEntities; ++i) {
         float x = rand() % screenWidth;
         float y = rand() % screenHeight;
-        float vx = (rand() % 200 - 100) * 6.0f;
-        float vy = (rand() % 200 - 100) * 2.0f;
-        float radius = (rand() % 50) / 10.0f + 10.0f;
+        float vx = (rand() % 200 - 100) * 1.0f;
+        float vy = (rand() % 200 - 100) * 1.0f;
+        float radius = (rand() % 50) / 10.0f + 1.0f;
         // float mass = (rand() % 50) / 10.0f + 1.0f;
         float mass = radius*radius/100.f;
         ecs.insertEntity(i+20, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
@@ -771,7 +908,10 @@ pl("\n")
         // x = 600;
         // vx = -80;
         // ecs.insertEntity(3, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
-
+        float total_energy = 0;
+        for (auto& [id, entity] : ecs.entities) {
+            total_energy += entity->mass * dot(entity->velocity,entity->velocity);
+        }
         // std::cout << "******\n\n";
     // ecs.printEntityFulls();
     while (!WindowShouldClose()){
@@ -779,32 +919,46 @@ pl("\n")
         BeginDrawing();
             for (const auto& [id, entity] : ecs.entities) {
                 DrawCircle(entity->position.x, entity->position.y, entity->radius, DARKBLUE);            
-                float d = 100.1;
-                if(entity->position.x < 0) {entity->velocity.x +=d;}
-                if(entity->position.x > screenWidth) {entity->velocity.x -=d;}
-                if(entity->position.y < 0) {entity->velocity.y +=d;}
-                if(entity->position.y > screenHeight) {entity->velocity.y -=d;}
             }
-            // if(IsKeyDown(KEY_ENTER)){
+
+            if(IsKeyDown(KEY_ENTER)){
+            for (const auto& [id, entity] : ecs.entities) {
+                float d = 100.1;
+                // if(entity->position.x < 0) {entity->velocity.x +=d;}
+                // if(entity->position.x > screenWidth) {entity->velocity.x -=d;}
+                // if(entity->position.y < 0) {entity->velocity.y +=d;}
+                // if(entity->position.y > screenHeight) {entity->velocity.y -=d;}
+
+                if(entity->position.x < 0) {entity->velocity.x *= -1;}
+                if(entity->position.x > screenWidth) {entity->velocity.x *= -1;}
+                if(entity->position.y < 0) {entity->velocity.y *= -1;}
+                if(entity->position.y > screenHeight) {entity->velocity.y *= -1;}
+            }
                 collisions.clear();
-                if(IsKeyDown(KEY_RIGHT_SHIFT)){
-                    ecs.tick_simulation(-0.016);
+                if(IsKeyDown(KEY_LEFT_SHIFT)){
+                    ecs.tick_simulation_precise(0.016);
                 } else {
-                    ecs.tick_simulation(0.016);
+                    ecs.tick_simulation_fast(0.016);
                 }
                 // ecs.printEntityFulls();
-            // }
-            for (auto p : collisions){
-                DrawCircle(p.x, p.y, 3, GREEN);   
             }
+            // for (auto p : collisions){
+            //     DrawCircle(p.x, p.y, 3, GREEN);   
+            // }
             DrawFPS(10,10);
         EndDrawing();
     }
     // ecs.printEntityFulls();
-    ecs.printEntityProblems();
+    // ecs.printEntityProblems();
     // benchmark(ecs, 1);
         std::cout << "******\n\n";
     CloseWindow(); 
+
+    std::cout << "total_energy is " << total_energy << "\n";
+    for (auto& [id, entity] : ecs.entities) {
+        total_energy -= entity->mass * dot(entity->velocity,entity->velocity);
+    }
+    std::cout << "energy difference is " << total_energy << "\n";
     std::cout << "collision counter is " << collisionCounter << "\n";
 
     return 0;
