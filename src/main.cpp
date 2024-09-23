@@ -1,5 +1,7 @@
 #include <chrono>
 #include <iostream>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,7 +18,11 @@ using std::unordered_map;
 using std::unordered_set;
 // using std::unique_ptr;
 
+#define __ITERATION_STRATEGY_SPATIAL_COHERENCE
+
 std::vector<glm::vec2> collisions;
+std::mutex entityMutex;
+std::mutex partitioningMutex;
 
 // #define pl(x) std::cout << ":" << __LINE__ << " " << __FUNCTION__ << "() " #x " " << x << "\n";
 #define pl(x) 
@@ -55,10 +61,18 @@ struct Entity {
     int id;
     vec2 position = vec2(0);
     vec2 velocity = vec2(0);
+    float angularVelocity = 0.0f; // Added for rotation
+    float rotation = 0.0f; // Rotation angle
     ShapeType shape = ShapeType::None; //TODO union
-        float radius = 0;
-        float width = 0;
-        float height = 0;
+    union {
+        struct{ // Circle
+            float radius;
+        };
+        struct{ // Square
+            float width = 0;
+            float height = 0;
+        };
+    };
     float mass = 1;
     Entity* next = nullptr;
     int mip_stored = 0; // velocity AND size(rad/h+w) change mip, and to find entity after they cahnged we need this
@@ -249,7 +263,7 @@ struct ECS {
     void destroy() {}
 
     void insertEntity(int id, vec2 position, vec2 velocity, ShapeType shape, float size, float mass) {
-        Entity* entity = new Entity{id, position, velocity, shape, 0, 0, 0, mass, nullptr};
+        Entity* entity = new Entity{id, position, velocity, 0,0, shape, {0}, mass, nullptr};
         if (shape == ShapeType::Circle) {
             entity->radius = size;
         } else if (shape == ShapeType::Square) {
@@ -262,10 +276,10 @@ pl(__LINE__)
 pl(__LINE__)
     }
 
-    void updateEntityPosition(int id, float dtime) {
-        Entity* entity = entities[id];
-        partitioning.moveEntity(entity, entity->getCharacteristicSize(dtime));
-    }
+    // void updateEntityPosition(int id, float dtime) {
+    //     Entity* entity = entities[id];
+    //     partitioning.moveEntity(entity, entity->getCharacteristicSize(dtime));
+    // }
 
     void processSimulationPrecise(float deltaTime) {
         float usedTime = 0.0f;
@@ -313,63 +327,157 @@ pl(__LINE__)
         }
     }
 
-    void processSimulationFast(float dTime) {
-        
+    void processSimulationFastSingleThread(float dTime) {
         std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal> already_processed_ents = {};
-        for(int mip=0; mip<partitioning.mipLevels; mip++){
-            for (int xx = 0; xx < partitioning.grids[mip].gridSize.x; xx++) {
-            for (int yy = 0; yy < partitioning.grids[mip].gridSize.y; yy++) {
-                int idx = xx + yy * partitioning.grids[mip].gridSize.x;
-                Entity* entity = partitioning.grids[mip].cells[idx].head;
-                // Continue finding and processing collisions until we've exhausted the delta time
-                // this is like general physics engine approach but precise and painfully slow
-                while(entity) {
-                    float usedTime = 0.0f;
-                    while (usedTime < dTime) {
-                        // pl("START ITER")
-                        CollisionEvent nextCollision = {0};
-                        bool collides_someday = findNextCollisionWithNearby(entity, &nextCollision, already_processed_ents);
-                        bool collides_this_tick = (collides_someday) && (nextCollision.timeUntilCollision < (dTime - usedTime));
-                            pl(deltaTime)
-                            pl(usedTime)
-                            pl(collides_someday)
-                            pl(collides_this_tick)
-                            pl(nextCollision.timeUntilCollision)
+        // for(int mip=0; mip<partitioning.mipLevels; mip++){
+            #ifdef __ITERATION_STRATEGY_SPATIAL_COHERENCE
+            for(int mip=0; mip<partitioning.mipLevels; mip++){
+                for (int xx = 0; xx < partitioning.grids[mip].gridSize.x; xx++) {
+                for (int yy = 0; yy < partitioning.grids[mip].gridSize.y; yy++) {
+                    int idx = xx + yy * partitioning.grids[mip].gridSize.x;
+                    Entity* entity = partitioning.grids[mip].cells[idx].head;
+                    // Continue finding and processing collisions until we've exhausted the delta time
+                    // this is like general physics engine approach but precise and painfully slow
+                    while(entity) {
+            #else
+                    for (auto [id, entity]: entities) {
+            #endif
+                        // Continue finding and processing collisions until we've exhausted the delta time
+                        // this is like general physics engine approach but precise and painfully slow
+                        float usedTime = 0.0f;
+                        while (usedTime < dTime) {
+                            // pl("START ITER")
+                            CollisionEvent nextCollision = {0};
+                            bool collides_someday = findNextCollisionWithNearby(entity, &nextCollision, already_processed_ents);
+                            bool collides_this_tick = (collides_someday) && (nextCollision.timeUntilCollision < (dTime - usedTime));
+                                pl(deltaTime)
+                                pl(usedTime)
+                                pl(collides_someday)
+                                pl(collides_this_tick)
+                                pl(nextCollision.timeUntilCollision)
 
-                        if(collides_this_tick){
-                            // Move all entities by the time until the next collision
-                            float collisionTime = min(nextCollision.timeUntilCollision, dTime-usedTime);
+                            if(collides_this_tick){
+                                // Move all entities by the time until the next collision
+                                float collisionTime = min(nextCollision.timeUntilCollision, dTime-usedTime);
 
-                            // if(collisionTime > 0){
-                                // moveAllEntitiesByTime(collisionTime);
-                                nextCollision.entity1->position += nextCollision.entity1->velocity * dTime;
-                                partitioning.moveEntity(nextCollision.entity1, nextCollision.entity1->getCharacteristicSize(dTime));
-                                
-                                nextCollision.entity2->position += nextCollision.entity2->velocity * dTime;
-                                partitioning.moveEntity(nextCollision.entity2, nextCollision.entity2->getCharacteristicSize(dTime));
+                                // if(collisionTime > 0){
+                                    // moveAllEntitiesByTime(collisionTime);
+                                    nextCollision.entity1->position += nextCollision.entity1->velocity * dTime;
+                                    partitioning.moveEntity(nextCollision.entity1, nextCollision.entity1->getCharacteristicSize(dTime));
+                                    
+                                    nextCollision.entity2->position += nextCollision.entity2->velocity * dTime;
+                                    partitioning.moveEntity(nextCollision.entity2, nextCollision.entity2->getCharacteristicSize(dTime));
 
-                                usedTime += collisionTime;
+                                    usedTime += collisionTime;
 
-                                // Handle the next collision
-                                if (nextCollision.entity1 && nextCollision.entity2) { //TODO redundant
-                                    vec2 delta = nextCollision.entity2->position - nextCollision.entity1->position;
-                                    resolveCollision(*nextCollision.entity1, *nextCollision.entity2, delta);
-                                    vec2 v = (nextCollision.entity1->position + nextCollision.entity2->position)/2.f;
-                                    collisions.push_back({v.x, v.y});
-                                }
-                            // }
-                        } else {
-                            entity->position += entity->velocity * (dTime - usedTime);
-                            partitioning.moveEntity(entity, entity->getCharacteristicSize(dTime - usedTime));
-                            break;
+                                    // Handle the next collision
+                                    if (nextCollision.entity1 && nextCollision.entity2) { //TODO redundant
+                                        vec2 delta = nextCollision.entity2->position - nextCollision.entity1->position;
+                                        resolveCollision(*nextCollision.entity1, *nextCollision.entity2, delta);
+                                        vec2 v = (nextCollision.entity1->position + nextCollision.entity2->position)/2.f;
+                                        collisions.push_back({v.x, v.y});
+                                    }
+                                // }
+                            } else {
+                                entity->position += entity->velocity * (dTime - usedTime);
+                                partitioning.moveEntity(entity, entity->getCharacteristicSize(dTime - usedTime));
+                                break;
+                            }
                         }
-                    }
+            #ifdef __ITERATION_STRATEGY_SPATIAL_COHERENCE
                     entity = entity->next;
-                }
-            }}
-        }
+                    }
+                }}
+            }
+            #else
+            }
+            #endif
     }
     
+    void processSimulationFastThread(int startX, int endX, int startY, int endY, int mip, float dTime) {
+        std::unordered_set<std::pair<Entity*, Entity*>, pair_hash, pair_equal> already_processed_ents;
+        
+        for (int xx = startX; (xx < endX) && (xx < partitioning.grids[mip].gridSize.x); xx++) {
+        for (int yy = startY; (yy < endY) && (yy < partitioning.grids[mip].gridSize.y); yy++) {
+            int idx = xx + yy * partitioning.grids[mip].gridSize.x;
+            
+            // Lock partitioning grid when accessing cells
+            partitioningMutex.lock();
+            Entity* entity = partitioning.grids[mip].cells[idx].head;
+            partitioningMutex.unlock();
+
+            while (entity) {
+                float usedTime = 0.0f;
+                while (usedTime < dTime) {
+                    CollisionEvent nextCollision = {0};
+                    
+                    // Find next collision (this can be parallel too, but needs synchronization)
+                    bool collides_someday = findNextCollisionWithNearby(entity, &nextCollision, already_processed_ents);
+                    bool collides_this_tick = (collides_someday) && (nextCollision.timeUntilCollision < (dTime - usedTime));
+
+                    if (collides_this_tick) {
+                        float collisionTime = min(nextCollision.timeUntilCollision, dTime - usedTime);
+
+                        // Move entities safely (lock them during updates)
+                        entityMutex.lock();
+                        nextCollision.entity1->position += nextCollision.entity1->velocity * dTime;
+                        partitioning.moveEntity(nextCollision.entity1, nextCollision.entity1->getCharacteristicSize(dTime));
+
+                        nextCollision.entity2->position += nextCollision.entity2->velocity * dTime;
+                        partitioning.moveEntity(nextCollision.entity2, nextCollision.entity2->getCharacteristicSize(dTime));
+                        entityMutex.unlock();
+
+                        usedTime += collisionTime;
+
+                        // Handle the collision
+                        entityMutex.lock();
+                        if (nextCollision.entity1 && nextCollision.entity2) {
+                            vec2 delta = nextCollision.entity2->position - nextCollision.entity1->position;
+                            resolveCollision(*nextCollision.entity1, *nextCollision.entity2, delta);
+                        }
+                        entityMutex.unlock();
+                    } else {
+                        entityMutex.lock();
+                        entity->position += entity->velocity * (dTime - usedTime);
+                        partitioning.moveEntity(entity, entity->getCharacteristicSize(dTime - usedTime));
+                        entityMutex.unlock();
+                        break;
+                    }
+                }
+                entity = entity->next;
+            }
+        }}
+    }
+
+    // Multithreaded simulation processing
+    void processSimulationFastMultithreaded(float dTime) {
+        int totalNumThreads = std::thread::hardware_concurrency(); // Get the number of CPU cores
+        std::vector<std::thread> threads = {};
+
+        // int gridWidth = partitioning.grids[0].gridSize.x;
+        // int gridHeight = partitioning.grids[0].gridSize.y;
+        // int chunkSizeX = gridWidth / totalNumThreads; // Split the grid among threads
+        // int chunkSizeY = gridHeight / totalNumThreads;
+            
+        // How many threads per grid should we try to allocate
+        int currentTPG = totalNumThreads/2;
+
+        for(int mip=0; mip<partitioning.mipLevels; mip++){
+            ivec2 grid_size = partitioning.grids[mip].gridSize;
+            for (int t = 0; t < currentTPG; t++) {
+                int chunk_size_x = grid_size.x / currentTPG;
+                int startX = (t * chunk_size_x) % grid_size.x;
+                int endX = startX + chunk_size_x;
+                threads.push_back(std::thread(&ECS::processSimulationFastThread, this, startX, endX, mip, 0, grid_size.y, mip, dTime));  // Mip level 0
+            }
+            currentTPG /= 2;
+        }
+
+        for (auto& thread : threads) {
+            thread.join();
+        }
+    }
+
     void moveAllEntitiesByTime(float dTime) {
         for (auto& [id, entity] : entities) {
             entity->position += entity->velocity * dTime;
@@ -542,54 +650,82 @@ pl(__LINE__)
     bool circleCircleIntersectionTime(vec2 pos1, vec2 vel1, float radius1, 
                                        vec2 pos2, vec2 vel2, float radius2,
                                        float* timeUntilCollision) {
-    // Relative position and velocity
-    vec2 p_rel = pos2 - pos1;
-    vec2 v_rel = vel2 - vel1;
+        // Relative position and velocity
+        vec2 p_rel = pos2 - pos1;
+        vec2 v_rel = vel2 - vel1;
 
-    if(length(p_rel) <= radius1 + radius2) {
-        *timeUntilCollision = 0;
-        return true;
+        if(length(p_rel) <= radius1 + radius2) {
+            *timeUntilCollision = 0;
+            return true;
+        }
+
+        // pl(p_rel.x)
+        // pl(v_rel.x)
+
+        float r_sum = radius1 + radius2;  // Combined radii
+        float r_sum_sq = r_sum * r_sum;   // Square of combined radii
+
+        // Coefficients for the quadratic equation
+        float a = dot(v_rel, v_rel);  // ||v_rel||^2
+        float b = 2.0f * dot(p_rel, v_rel);  // 2 * dot(p_rel, v_rel)
+        float c = dot(p_rel, p_rel) - r_sum_sq;  // ||p_rel||^2 - (r1 + r2)^2
+
+        // Solve the quadratic equation: a * t^2 + b * t + c = 0
+        float discriminant = b * b - 4 * a * c;
+
+        if (discriminant < 0 || a == 0) {
+            // No real intersection or no relative velocity
+            return false;  // Return negative time to indicate no intersection
+        }
+
+        // Two possible times (t1 and t2)
+        float sqrtDiscriminant = sqrt(discriminant);
+        float t1 = (-b - sqrtDiscriminant) / (2.0f * a);
+        float t2 = (-b + sqrtDiscriminant) / (2.0f * a);
+
+        // We're interested in the first positive time
+        if (t1 >= 0) {
+            *timeUntilCollision = t1;
+            // pl(t1)
+            return true;
+        }
+        if (t2 >= 0) {
+            *timeUntilCollision = t2;
+            // pl(t2)
+            return true;
+        }
+
+        // If both times are negative, there's no future collision
+        return false;
     }
 
-    // pl(p_rel.x)
-    // pl(v_rel.x)
-
-    float r_sum = radius1 + radius2;  // Combined radii
-    float r_sum_sq = r_sum * r_sum;   // Square of combined radii
-
-    // Coefficients for the quadratic equation
-    float a = dot(v_rel, v_rel);  // ||v_rel||^2
-    float b = 2.0f * dot(p_rel, v_rel);  // 2 * dot(p_rel, v_rel)
-    float c = dot(p_rel, p_rel) - r_sum_sq;  // ||p_rel||^2 - (r1 + r2)^2
-
-    // Solve the quadratic equation: a * t^2 + b * t + c = 0
-    float discriminant = b * b - 4 * a * c;
-
-    if (discriminant < 0 || a == 0) {
-        // No real intersection or no relative velocity
-        return false;  // Return negative time to indicate no intersection
+    bool squareSquareIntersectionTime(Entity& square1, Entity& square2, float* timeUntilCollision) {
+        // AABB collision detection between rotated squares
+        vec2 delta = square2.position - square1.position;
+        if (abs(delta.x) < (square1.width / 2 + square2.width / 2) &&
+            abs(delta.y) < (square1.height / 2 + square2.height / 2)) {
+            *timeUntilCollision = 0; // Collision already occurred
+            return true;
+        }
+        return false;
     }
 
-    // Two possible times (t1 and t2)
-    float sqrtDiscriminant = sqrt(discriminant);
-    float t1 = (-b - sqrtDiscriminant) / (2.0f * a);
-    float t2 = (-b + sqrtDiscriminant) / (2.0f * a);
-
-    // We're interested in the first positive time
-    if (t1 >= 0) {
-        *timeUntilCollision = t1;
-        // pl(t1)
-        return true;
+    // Handle point collision with shapes (point-circle, point-square)
+    bool pointShapeCollision(Entity& point, Entity& shape, float* timeUntilCollision) {
+        if (shape.shape == ShapeType::Circle) {
+            return circleCircleIntersectionTime(point.position, point.velocity, 0,
+                                                shape.position, shape.velocity, shape.radius,
+                                                timeUntilCollision);
+        } else if (shape.shape == ShapeType::Square) {
+            // Treat the point as a tiny square with zero size
+            vec2 delta = shape.position - point.position;
+            if (abs(delta.x) < shape.width / 2 && abs(delta.y) < shape.height / 2) {
+                *timeUntilCollision = 0;
+                return true;
+            }
+        }
+        return false;
     }
-    if (t2 >= 0) {
-        *timeUntilCollision = t2;
-        // pl(t2)
-        return true;
-    }
-
-    // If both times are negative, there's no future collision
-    return false;
-}
 
     // Calculate time until collision between two entities
     bool calculateCollisionTime(Entity& entity1, Entity& entity2, float* timeUntilCollision) {
@@ -603,6 +739,12 @@ pl(__LINE__)
             return circleCircleIntersectionTime(entity1.position, entity1.velocity, entity1.radius,
                                                 entity2.position, entity2.velocity, entity2.radius,
                                                 timeUntilCollision);
+        } else if (entity1.shape == ShapeType::Square && entity2.shape == ShapeType::Square) {
+        // Square-Square collision logic
+        return squareSquareIntersectionTime(entity1, entity2, timeUntilCollision);
+        } else if (entity1.shape == ShapeType::Point || entity2.shape == ShapeType::Point) {
+            // Point-Square or Point-Circle collision logic
+            return pointShapeCollision(entity1, entity2, timeUntilCollision);
         }
         //TODO other
         
@@ -663,7 +805,8 @@ pl(__LINE__)
             // if()
                            
         }
-        processSimulationFast(deltaTime);
+        // processSimulationFastSingleThread(deltaTime);
+        processSimulationFastMultithreaded(deltaTime);
     }
 
     void printEntityPositions() {
@@ -714,7 +857,7 @@ pl(__LINE__)
 void benchmark(ECS& ecs, int numIterations) {
     auto startTime = std::chrono::high_resolution_clock::now();
 
-    for (int i = 0; i < numIterations; ++i) {
+    for (int i = 0; i < numIterations; i++) {
         ecs.tick_simulation_precise(0.016f);
     }
 
@@ -870,11 +1013,11 @@ int main() {
     const int screenHeight = 450;
     InitWindow(screenWidth, screenHeight, "raylib [shapes] example - basic shapes drawing");
     SetTargetFPS(60);
-    int cells = 100;
+    int cells = 128;
     ECS ecs; ecs.create(cells, cells, 800.0f / cells);
 pl("\n")
 
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 20; i++) {
         float x = screenWidth/2.f;
         float y = (float(i)*screenHeight)/20;
         float radius = 5.0f;
@@ -883,13 +1026,14 @@ pl("\n")
         ecs.insertEntity(i, vec2(x, y), vec2(0.01), ShapeType::Circle, radius, mass);
     }
     srand(2);
-    int numEntities = 5000;
-    for (int i = 0; i < numEntities; ++i) {
+    int numEntities = 10000;
+    for (int i = 0; i < numEntities; i++) {
         float x = rand() % screenWidth;
         float y = rand() % screenHeight;
         float vx = (rand() % 200 - 100) * 1.0f;
         float vy = (rand() % 200 - 100) * 1.0f;
         float radius = (rand() % 50) / 10.0f + 1.0f;
+        // float radius = (rand() % 50) / 10.0f + 10.0f;
         // float mass = (rand() % 50) / 10.0f + 1.0f;
         float mass = radius*radius/100.f;
         ecs.insertEntity(i+20, vec2(x, y), vec2(vx, vy), ShapeType::Circle, radius, mass);
@@ -924,10 +1068,10 @@ pl("\n")
             if(IsKeyDown(KEY_ENTER)){
             for (const auto& [id, entity] : ecs.entities) {
                 float d = 100.1;
-                // if(entity->position.x < 0) {entity->velocity.x +=d;}
-                // if(entity->position.x > screenWidth) {entity->velocity.x -=d;}
-                // if(entity->position.y < 0) {entity->velocity.y +=d;}
-                // if(entity->position.y > screenHeight) {entity->velocity.y -=d;}
+                if(entity->position.x < -10)            {entity->position.x = screenWidth/2.f;}
+                if(entity->position.x > screenWidth+10) {entity->position.x = screenWidth/2.f;}
+                if(entity->position.y < -10)             {entity->position.y = screenHeight/2.f;}
+                if(entity->position.y > screenHeight+10) {entity->position.y = screenHeight/2.f;}
 
                 if(entity->position.x < 0) {entity->velocity.x *= -1;}
                 if(entity->position.x > screenWidth) {entity->velocity.x *= -1;}

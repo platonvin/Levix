@@ -15,7 +15,7 @@ else
 endif
 	
 always_enabled_flags = -fno-exceptions -Wuninitialized -std=c++20
-special_otp_flags = -O3
+special_otp_flags = -Ofast -march=native
 
 srcs := \
 	src/main.cpp\
@@ -53,9 +53,9 @@ library: init vcpkg_installed_eval $(lib_objs)
 	ar rvs lib/liblevix.a $(lib_objs)
 
 build_main_deb: library obj/main_deb.o
-	c++ -o main_deb obj/main_deb.o -Llib $(flags) $(I) $(L) $(REQUIRED_LIBS) $(STATIC_OR_DYNAMIC)
+	c++ -g -o main_deb obj/main_deb.o -Llib $(flags) $(I) $(L) $(REQUIRED_LIBS) $(STATIC_OR_DYNAMIC)
 build_main_rel: library obj/main_rel.o
-	c++ -O3 -o main_rel obj/main_rel.o -Llib $(flags) $(I) $(L) $(REQUIRED_LIBS) $(STATIC_OR_DYNAMIC)
+	c++ $(special_otp_flags) -o main_rel obj/main_rel.o -Llib $(flags) $(I) $(L) $(REQUIRED_LIBS) $(STATIC_OR_DYNAMIC)
 
 init: obj lib
 obj:
