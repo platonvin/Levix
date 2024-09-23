@@ -1,0 +1,3 @@
+This is an experiment on a collision solver using a hybrid broad-phase algorithm, differing from traditional approaches like trees or grids. It employs a "mipmap" system consisting of multiple grids, each with different cell sizes and a proportional number of cells. Entities are voxelized into a corresponding grid (or mip) based on their "effective" size, which reflects the distance points can be from an entity and still potentially collide. The cells are updated, and collisions are checked within a 3x3 neighboring cell area for every equal or higher mip level.
+
+Even tho it performs *relatively* well (30 fps for 10k active entites in main.cpp demo), i do not see any potential in such approach
