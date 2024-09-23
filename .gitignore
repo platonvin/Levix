@@ -6,3 +6,6 @@ main_rel.exe
 obj
 lib
 /code.cpp
+/gmon.out
+/output.png
+/analysis.txt

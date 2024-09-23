@@ -511,73 +511,6 @@ struct ECS {
         }}
     }
 
-    // Multithreaded simulation processing
-    void processSimulationFastMultithreaded(float dTime) {
-        int totalNumThreads = std::thread::hardware_concurrency(); // Get the number of CPU cores
-        std::vector<std::thread> threads;
-
-        int currentTPG = totalNumThreads /2; // Threads per grid starts as half of total threads to add up to total count
-
-        // for (int mip = 0; mip < partitioning.mipLevels; mip++) {
-        //     ivec2 grid_size = partitioning.grids[mip].gridSize;
-
-        //     // If currentTPG is 0, we don't need further processing
-        //     // if (currentTPG <= 0) break;
-        //     currentTPG = clamp(currentTPG, 1, totalNumThreads);
-
-        //     int chunk_size_x = (grid_size.x+currentTPG-1) / currentTPG;
-        //     int chunk_size_y = grid_size.y;
-
-        //     for (int t = 0; t < currentTPG; t++) {
-        //         int startX = (t * chunk_size_x) % grid_size.x;
-        //         int startY = 0;
-        //         int endX = startX + chunk_size_x+1;
-        //         int endY = grid_size.y;
-
-        //         // Ensure end bounds don't exceed grid limits
-        //         endX = std::min(endX, grid_size.x);
-        //         endY = std::min(endY, grid_size.y);
-
-        //         // Create thread for the current chunk and mip level
-        //         threads.push_back(std::thread(&ECS::processSimulationFastThread, this, startX, endX, startY, endY, mip, dTime));
-        //     }
-
-        //     // Reduce threads per grid for the next mip level
-        //     currentTPG = currentTPG / 2;
-        // }
-
-        for (int mip = 0; mip < partitioning.mipLevels; mip++) {
-            ivec2 grid_size = partitioning.grids[mip].gridSize;
-
-            // If currentTPG is 0, we don't need further processing
-            // if (currentTPG <= 0) break;
-            currentTPG = clamp(currentTPG, 1, 4);
-
-            int chunk_size_x = (grid_size.x+currentTPG-1) / currentTPG;
-            int chunk_size_y = grid_size.y;
-
-            for (int t = 0; t < currentTPG; t++) {
-                int startX = (t * chunk_size_x) % grid_size.x;
-                int startY = 0;
-                int endX = startX + chunk_size_x+1;
-                int endY = grid_size.y;
-
-                endX = std::min(endX, grid_size.x);
-                endY = std::min(endY, grid_size.y);
-
-                threads.push_back(std::thread(&ECS::processSimulationFastThread, this, startX, endX, startY, endY, mip, dTime));
-            }
-
-            // processSimulationFastThread(0, grid_size.x, 0, grid_size.y, mip, dTime);
-
-            currentTPG = currentTPG / 2;
-        }
-
-        for (auto& thread : threads) {
-            thread.join();
-        }
-    }
-
     void moveAllEntitiesByTime(float dTime) {
         for (auto& [id, entity] : entities) {
             entity->position += entity->velocity * dTime;
@@ -909,8 +842,7 @@ struct ECS {
             // if()
                            
         }
-        // processSimulationFastSingleThread(deltaTime);
-        processSimulationFastMultithreaded(deltaTime);
+        processSimulationFastSingleThread(deltaTime);
     }
 
     void printEntityPositions() {
